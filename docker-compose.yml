@@ -1,0 +1,88 @@
+# =============================================================================
+# DB Security Lab — учебный стенд: аудит БД, WAF, обнаружение SQL-инъекций
+# ДЕМО-СТЕНД. НЕ ВЫСТАВЛЯТЬ В ПУБЛИЧНУЮ СЕТЬ.
+# =============================================================================
+name: db-security-lab
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: lab-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-securedemo}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-app_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-admin_change_me}
+      APP_READONLY_PASSWORD: ${APP_READONLY_PASSWORD:-readonly_change_me}
+      APP_LOGGER_PASSWORD: ${APP_LOGGER_PASSWORD:-logger_change_me}
+    # Расширенное журналирование PostgreSQL (см. отчёт, раздел 5):
+    command:
+      - postgres
+      - -c
+      - log_statement=mod                  # все DML/DDL в журнал
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+      - -c
+      - log_min_duration_statement=200     # медленные запросы > 200 ms
+      - -c
+      - log_min_error_statement=error      # SQL для ошибок >= ERROR
+      - -c
+      - log_line_prefix=%m [%p] db=%d,user=%u,app=%a,client=%h
+      - -c
+      - log_lock_waits=on
+      - -c
+      - log_checkpoints=on
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_ADMIN_USER:-app_admin} -d ${POSTGRES_DB:-securedemo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build:
+      context: ./backend
+    container_name: lab-backend
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-securedemo}
+      DB_ADMIN_USER: ${POSTGRES_ADMIN_USER:-app_admin}
+      DB_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-admin_change_me}
+      DB_READONLY_USER: app_readonly
+      DB_READONLY_PASSWORD: ${APP_READONLY_PASSWORD:-readonly_change_me}
+      DB_LOGGER_USER: app_logger
+      DB_LOGGER_PASSWORD: ${APP_LOGGER_PASSWORD:-logger_change_me}
+      WAF_DEFAULT_ENABLED: ${WAF_DEFAULT_ENABLED:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: lab-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+
+volumes:
+  pg_data:
